@@ -7,12 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(asio INTERFACE)
 target_include_directories(asio INTERFACE "${CMAKE_SOURCE_DIR}/include")
+add_library(cw INTERFACE)
+target_include_directories(cw INTERFACE "${CMAKE_SOURCE_DIR}/src/cw/protocol")
+target_include_directories(cw INTERFACE "${CMAKE_SOURCE_DIR}/src/cw")
+
+add_executable(ConnectWith "src/main.cpp"   "src/cw/endian.h" "src/cw/protocol/packet/packet_type.h"
+"src/cw/protocol/packet/packet_registry.h"
+"src/cw/protocol/packet/packet.h"  "src/cw/Frame.h")
 
 
-add_executable(ConnectWith "src/main.cpp"   "src/endian.h" "src/protocol/packet_type.h" "src/protocol/file_info_packet.h" "src/protocol/file_chunk_packet.h" "src/protocol/file_done_packet.h" "src/protocol/error_packet.h" "src/protocol/packet_registry.h")
-
-
-target_link_libraries(ConnectWith PRIVATE asio)
+target_link_libraries(ConnectWith PRIVATE asio cw)
 if(WIN32)
 	target_link_libraries(ConnectWith PRIVATE ws2_32)
 endif()
