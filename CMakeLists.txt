@@ -11,6 +11,8 @@ add_library(cw INTERFACE)
 target_include_directories(cw INTERFACE "${CMAKE_SOURCE_DIR}/src/cw/protocol")
 target_include_directories(cw INTERFACE "${CMAKE_SOURCE_DIR}/src/cw")
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 add_executable(ConnectWith "src/main.cpp"   "src/cw/endian.h" "src/cw/protocol/packet/packet_type.h"
 "src/cw/protocol/packet/packet_registry.h"
 "src/cw/protocol/packet/packet.h"  "src/cw/Frame.h")
