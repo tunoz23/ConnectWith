@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <vector>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
@@ -40,6 +41,23 @@ namespace cw {
 			littleEndianValue = toBigEndian(littleEndianValue);
 			std::memcpy(dest, &littleEndianValue, sizeof(T));
 		}
+
+		template<Integer T>
+		void writeBigEndian(std::vector<uint8_t>& buffer, T value)
+		{
+
+			constexpr size_t bytes = sizeof(T);
+
+			size_t oldSize = buffer.size();
+				
+			buffer.resize(oldSize + bytes);
+
+				
+			writeBigEndian(buffer.data() + oldSize, value);
+		}
+	
+
+
 
 		template<Integer T>
 		constexpr T readBigEndian(const uint8_t* src) noexcept
