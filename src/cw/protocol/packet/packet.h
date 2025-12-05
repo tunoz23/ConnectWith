@@ -24,7 +24,7 @@ namespace cw::packet
 
 		void serialize(std::vector<uint8_t>& out) const
 		{
-			cw::endian::writeBigEndian<uint64_t>(out, offset);
+			cw::binary::writeBigEndian<uint64_t>(out, offset);
 		}
 
 		static Ack deserialize(const uint8_t* buf, size_t size)
@@ -33,7 +33,7 @@ namespace cw::packet
 				throw std::runtime_error("Ack: payload too small.");
 
 			Ack packet;
-			packet.offset = cw::endian::readBigEndian<uint64_t>(buf);
+			packet.offset = cw::binary::readBigEndian<uint64_t>(buf);
 			return packet;
 		}
 	};
@@ -53,8 +53,8 @@ namespace cw::packet
 			if (message.size() > MAX_STRING_LENGTH)
 				throw std::length_error("Error: Message exceeds protocol limit.");
 
-			cw::endian::writeBigEndian(out, code);
-			cw::endian::writeBigEndian(out, static_cast<uint32_t>(message.size()));
+			cw::binary::writeBigEndian(out, code);
+			cw::binary::writeBigEndian(out, static_cast<uint32_t>(message.size()));
 			out.insert(out.end(), message.begin(), message.end());
 		}
 
@@ -67,10 +67,10 @@ namespace cw::packet
 			Error p;
 			size_t cursor = 0;
 
-			p.code = cw::endian::readBigEndian<uint16_t>(buf + cursor);
+			p.code = cw::binary::readBigEndian<uint16_t>(buf + cursor);
 			cursor += sizeof(p.code);
 
-			uint32_t msgLen = cw::endian::readBigEndian<uint32_t>(buf + cursor);
+			uint32_t msgLen = cw::binary::readBigEndian<uint32_t>(buf + cursor);
 			cursor += sizeof(msgLen);
 
 			// SECURITY: Sanity Check before allocation
@@ -108,8 +108,8 @@ namespace cw::packet
 			if (data.size() > UINT32_MAX)
 				throw std::length_error("Chunk: Data too large for u32 field.");
 
-			cw::endian::writeBigEndian(out, offset);
-			cw::endian::writeBigEndian(out, static_cast<uint32_t>(data.size()));
+			cw::binary::writeBigEndian(out, offset);
+			cw::binary::writeBigEndian(out, static_cast<uint32_t>(data.size()));
 			out.insert(out.end(), data.begin(), data.end());
 		}
 
@@ -121,10 +121,10 @@ namespace cw::packet
 			FileChunk chunk;
 			size_t cursor = 0;
 
-			chunk.offset = endian::readBigEndian<uint64_t>(buf + cursor);
+			chunk.offset = binary::readBigEndian<uint64_t>(buf + cursor);
 			cursor += sizeof(offset);
 
-			uint32_t dataLen = endian::readBigEndian<uint32_t>(buf + cursor);
+			uint32_t dataLen = binary::readBigEndian<uint32_t>(buf + cursor);
 			cursor += sizeof(dataLen);
 
 			// SECURITY: Check logic
@@ -151,7 +151,7 @@ namespace cw::packet
 
 		void serialize(std::vector<uint8_t>& out) const
 		{
-			cw::endian::writeBigEndian<uint64_t>(out, fileSize);
+			cw::binary::writeBigEndian<uint64_t>(out, fileSize);
 		}
 
 		static FileDone deserialize(const uint8_t* buf, size_t size)
@@ -160,7 +160,7 @@ namespace cw::packet
 				throw std::runtime_error("FileDone: payload too small.");
 
 			FileDone packet;
-			packet.fileSize = cw::endian::readBigEndian<uint64_t>(buf);
+			packet.fileSize = cw::binary::readBigEndian<uint64_t>(buf);
 			return packet;
 		}
 	};
@@ -180,8 +180,8 @@ namespace cw::packet
 			if (fileName.empty()) throw std::length_error("FileInfo: Filename empty");
 			if (fileName.size() > MAX_STRING_LENGTH) throw std::length_error("FileInfo: Filename too long");
 
-			cw::endian::writeBigEndian(out, fileSize);
-			cw::endian::writeBigEndian(out, static_cast<uint32_t>(fileName.size()));
+			cw::binary::writeBigEndian(out, fileSize);
+			cw::binary::writeBigEndian(out, static_cast<uint32_t>(fileName.size()));
 			out.insert(out.end(), fileName.begin(), fileName.end());
 		}
 
@@ -193,10 +193,10 @@ namespace cw::packet
 			FileInfo info;
 			size_t cursor = 0;
 
-			info.fileSize = cw::endian::readBigEndian<uint64_t>(buf + cursor);
+			info.fileSize = cw::binary::readBigEndian<uint64_t>(buf + cursor);
 			cursor += sizeof(info.fileSize);
 
-			uint32_t nameLen = cw::endian::readBigEndian<uint32_t>(buf + cursor);
+			uint32_t nameLen = cw::binary::readBigEndian<uint32_t>(buf + cursor);
 			cursor += sizeof(nameLen);
 
 			if (nameLen > MAX_STRING_LENGTH)
