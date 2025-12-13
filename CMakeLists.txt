@@ -42,7 +42,7 @@ enable_testing()
 
 add_executable(Server 
     "src/main.cpp" # Contains Server Main
-)
+ "src/cw/file/file.h" "src/cw/network/Server.h" "src/cw/network/Client.h")
 target_link_libraries(Server PRIVATE cw)
 if(WIN32)
     target_link_libraries(Server PRIVATE ws2_32)
@@ -52,7 +52,7 @@ endif()
 
 add_executable(Client 
     "src/client.cpp" # Contains Client Main
-)
+ "src/cw/file/file.h" "src/cw/network/Server.h" "src/cw/network/Client.h")
 target_link_libraries(Client PRIVATE cw)
 if(WIN32)
     target_link_libraries(Client PRIVATE ws2_32)
@@ -62,7 +62,7 @@ endif()
 
 add_executable(unit_tests 
     "tests/main_test.cpp" # Contains GTest Main
-)
+ "src/cw/file/file.h" "src/cw/network/Server.h" "src/cw/network/Client.h")
 target_link_libraries(unit_tests PRIVATE GTest::gtest_main cw)
 if(WIN32)
     target_link_libraries(unit_tests PRIVATE ws2_32)

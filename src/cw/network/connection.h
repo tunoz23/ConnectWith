@@ -4,8 +4,10 @@
 #include <vector>
 #include <memory>
 #include <deque>
+#include <atomic>
 #include <iostream>
 #include <array>
+#include <fstream> // Added for file I/O
 
 // Project Headers
 #include "../Frame.h"
@@ -17,25 +19,25 @@ namespace cw::network {
 
 	class Connection : public std::enable_shared_from_this<Connection>
 	{
-		
+
 	public:
 		static std::shared_ptr<Connection> create(asio::io_context& io)
 		{
-		
 			return std::shared_ptr<Connection>(new Connection(io));
 		}
 
 		tcp::socket& socket() { return m_socket; }
 
-
+		bool isCongested() const
+		{
+			// If we have more than 1MB pending in RAM, tell the file reader to wait.
+			return m_queueSize > 1024 * 1024;
+		}
 		template<typename PacketT>
 		void send(const PacketT& packet)
 		{
-			// 1. Serialize immediately on the calling thread
 			auto frame = cw::packet::buildFrame(packet);
 
-			// 2. Post to the IO context
-			// This ensures doWrite always runs on the correct thread.
 			auto self = shared_from_this();
 			asio::post(m_socket.get_executor(),
 				[this, self, msg = std::move(frame)]()
@@ -43,16 +45,17 @@ namespace cw::network {
 					doWrite(std::move(msg));
 				});
 		}
-		
+
 		void start()
 		{
+			std::cout << "[Connection] Client Handshake Complete. Ready.\n";
 			doRead();
 		}
-	
+
 	private:
 		void doRead()
 		{
-			auto self = shared_from_this(); 
+			auto self = shared_from_this();
 
 			m_socket.async_read_some(asio::buffer(m_tempBuffer),
 				[this, self](std::error_code ec, std::size_t length)
@@ -67,7 +70,10 @@ namespace cw::network {
 
 						doRead();
 					}
-					else std::cerr << "[Connection] Error: " << ec.message() << "\n";
+					else {
+						// Socket closed or error
+						std::cout << "[Connection] Disconnected: " << ec.message() << "\n";
+					}
 
 				});
 		}
@@ -85,8 +91,6 @@ namespace cw::network {
 					ParsedFrame view = parseFrame(m_incomingBuffer);
 
 					// B. Calculate Total Size (Header + Payload)
-					// We need this to know how much to delete later.
-					// Header is always 10 bytes (8 Len + 2 Type)
 					constexpr size_t HEADER_SIZE = 10;
 					size_t totalFrameSize = HEADER_SIZE + view.size;
 
@@ -94,7 +98,6 @@ namespace cw::network {
 					dispatchPacket(view);
 
 					// D. Consume Data (The Shift)
-					// Remove the processed bytes from the front of the vector.
 					m_incomingBuffer.erase(m_incomingBuffer.begin(),
 						m_incomingBuffer.begin() + totalFrameSize);
 
@@ -104,9 +107,6 @@ namespace cw::network {
 				catch (const std::runtime_error&)
 				{
 					// FRAGMENTATION DETECTED
-					// parseFrame threw an exception because we don't have the full packet yet.
-					// This is NORMAL behavior in TCP.
-					// We break the loop and wait for the next doRead() to append missing data.
 					break;
 				}
 			}
@@ -114,36 +114,33 @@ namespace cw::network {
 
 		void doWrite(std::vector<uint8_t> frame)
 		{
+			m_queueSize += frame.size();
+
 			m_writeQueue.push_back(std::move(frame));
 
-			// If we were already writing, the existing callback will pick this up.
-			// If queue size was 0, it's now 1, so we must kickstart the chain.
-			if (m_writeQueue.size() > 1)
-				return;
-
+			if (m_writeQueue.size() > 1) return;
 			writeQueueFront();
+
 		}
 
 		// The actual Async Write call
 		void writeQueueFront()
 		{
 			auto self = shared_from_this();
-
 			asio::async_write(m_socket,
 				asio::buffer(m_writeQueue.front()),
-				[this, self](std::error_code ec, std::size_t /*length*/)
+				[this, self](std::error_code ec, std::size_t length)
 				{
 					if (!ec)
 					{
-						// 1. Remove the sent packet
+						// TRACKING: Subtract size (packet sent)
+						m_queueSize -= m_writeQueue.front().size();
+
 						m_writeQueue.pop_front();
 
-						// 2. Check if more items appeared while we were busy
-						if (!m_writeQueue.empty())
-						{
-							writeQueueFront(); // Continue the chain
-						}
+						if (!m_writeQueue.empty()) writeQueueFront();
 					}
+
 					else
 					{
 						std::cerr << "[Connection] Write Error: " << ec.message() << "\n";
@@ -151,8 +148,8 @@ namespace cw::network {
 					}
 				});
 		}
-		// 4. THE ROUTER
-		// Takes a view, deserializes it to a Struct, and handles it.
+
+		// 4. THE ROUTER (Business Logic)
 		void dispatchPacket(const cw::packet::ParsedFrame& view)
 		{
 			using namespace cw::packet;
@@ -161,15 +158,63 @@ namespace cw::network {
 			{
 			case PacketType::Ack:
 			{
-				// Deserialize bytes -> Struct
 				auto pkt = Ack::deserialize(view.payload_view, view.size);
-				std::cout << "[Recv] Ack Packet (Offset: " << pkt.offset << ")\n";
+				std::cout << "[Recv] Ack (Offset: " << pkt.offset << ")\n";
 				break;
 			}
 			case PacketType::FileInfo:
 			{
 				auto pkt = FileInfo::deserialize(view.payload_view, view.size);
-				std::cout << "[Recv] FileInfo: " << pkt.fileName << " (" << pkt.fileSize << " bytes)\n";
+				std::cout << "[Recv] Starting Download: " << pkt.fileName << " (" << pkt.fileSize << " bytes)\n";
+
+				// 1. Prepare File
+				// We prefix with "downloads_" to prevent overwriting critical system files
+				std::string targetPath = "downloads_" + pkt.fileName;
+
+				m_outFile.open(targetPath, std::ios::binary);
+				if (!m_outFile.is_open()) {
+					std::cerr << "[Error] Could not open file for writing: " << targetPath << "\n";
+					return;
+				}
+
+				m_expectedSize = pkt.fileSize;
+				m_receivedBytes = 0;
+				break;
+			}
+			case PacketType::FileChunk:
+			{
+				// 2. Write Chunk
+				if (!m_outFile.is_open()) return;
+
+				auto pkt = FileChunk::deserialize(view.payload_view, view.size);
+
+				// Using seekp handles out-of-order packets if we add parallel sending later
+				m_outFile.seekp(pkt.offset);
+				m_outFile.write(reinterpret_cast<const char*>(pkt.data.data()), pkt.data.size());
+
+				m_receivedBytes += pkt.data.size();
+				break;
+			}
+			case PacketType::FileDone:
+			{
+				// 3. Finish
+				auto pkt = FileDone::deserialize(view.payload_view, view.size);
+				if (m_outFile.is_open()) {
+					m_outFile.close();
+					std::cout << "[Recv] File Download Complete.\n";
+				}
+
+				if (m_receivedBytes == pkt.fileSize) {
+					std::cout << "[Check] Integrity Validated (" << m_receivedBytes << " bytes).\n";
+
+					// Send Ack back to client
+					Ack ack;
+					ack.offset = m_receivedBytes;
+					send(ack);
+				}
+				else {
+					std::cerr << "[Check] CORRUPTION DETECTED! Expected " << pkt.fileSize << " but got " << m_receivedBytes << "\n";
+				}
 				break;
 			}
 			case PacketType::Error:
@@ -178,21 +223,6 @@ namespace cw::network {
 				std::cerr << "[Recv] Error: " << pkt.message << "\n";
 				break;
 			}
-			case PacketType::FileChunk:
-			{
-				auto pkt = FileChunk::deserialize(view.payload_view, view.size);
-				std::cout << "[Recv] FileChunk: " << pkt.offset << "\n";
-				break;
-			}
-			case PacketType::FileDone:
-			{
-				auto pkt = FileDone::deserialize(view.payload_view, view.size);
-				std::cout << "[Recv] FileDone: " << pkt.fileSize << "\n";
-				break;
-			}
-			// Add other cases (FileChunk, etc.) here
-			//TO DO:
-			
 			default:
 				std::cout << "[Recv] Unknown Packet Type: " << (int)view.type << "\n";
 			}
@@ -201,18 +231,22 @@ namespace cw::network {
 		Connection(asio::io_context& io) :
 			m_socket(io)
 		{
-
+			// std::array is POD, no need to init explicitly but {} is fine
+			m_tempBuffer = {};
 			m_incomingBuffer.reserve(8192);
 		}
 
 
 	private:
 		asio::ip::tcp::socket m_socket;
-		//its ok for L1, L2 cache
+
 		std::array<uint8_t, 8192> m_tempBuffer;
-
 		std::vector<uint8_t> m_incomingBuffer;
-
 		std::deque<std::vector<uint8_t>> m_writeQueue;
+		std::atomic<size_t> m_queueSize = 0;
+		// --- File Transfer State ---
+		std::ofstream m_outFile;
+		std::uint64_t m_expectedSize = 0;
+		std::uint64_t m_receivedBytes = 0;
 	};
 }
