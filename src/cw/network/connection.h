@@ -7,7 +7,8 @@
 #include <atomic>
 #include <iostream>
 #include <array>
-#include <fstream> // Added for file I/O
+#include <fstream>
+#include <filesystem> // [Added] For directory creation
 
 // Project Headers
 #include "../Frame.h"
@@ -16,6 +17,7 @@
 namespace cw::network {
 
 	using asio::ip::tcp;
+	namespace fs = std::filesystem; // [Added] Alias
 
 	class Connection : public std::enable_shared_from_this<Connection>
 	{
@@ -167,11 +169,22 @@ namespace cw::network {
 				auto pkt = FileInfo::deserialize(view.payload_view, view.size);
 				std::cout << "[Recv] Starting Download: " << pkt.fileName << " (" << pkt.fileSize << " bytes)\n";
 
-				// 1. Prepare File
-				// We prefix with "downloads_" to prevent overwriting critical system files
-				std::string targetPath = "downloads_" + pkt.fileName;
+				// [FIX] Handle Directories & 1-1 Mapping
+				// 1. Convert to filesystem path
+				fs::path targetPath(pkt.fileName);
 
+				// 2. Create parent directories if they don't exist
+				if (targetPath.has_parent_path()) {
+					std::error_code ec;
+					fs::create_directories(targetPath.parent_path(), ec);
+					if (ec) {
+						std::cerr << "[Error] Failed to create directory: " << ec.message() << "\n";
+					}
+				}
+
+				// 3. Open File (Exact path, no prefix)
 				m_outFile.open(targetPath, std::ios::binary);
+
 				if (!m_outFile.is_open()) {
 					std::cerr << "[Error] Could not open file for writing: " << targetPath << "\n";
 					return;
