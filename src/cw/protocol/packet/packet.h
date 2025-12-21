@@ -1,214 +1,286 @@
 #pragma once
 
 #include <cstdint>
-#include <cstring>
+#include <limits>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
-#include <limits>
+
+#include "../../binary.h"
 #include "packet_type.h"
-#include "../endian.h"
 
-namespace cw::packet
-{
 
-	constexpr size_t MAX_STRING_LENGTH = 4096;        // 4 KB limit for messages/filenames
-	constexpr size_t MAX_CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB limit for file chunks
+namespace cw::packet {
 
-	struct Ack
-	{
-		static constexpr PacketType type = PacketType::Ack;
-		std::uint64_t offset;
+// Protocol limits
+inline constexpr std::size_t kMaxStringLength = 4096;
+inline constexpr std::size_t kMaxChunkSize = 10 * 1024 * 1024;
 
-		std::size_t payloadSize() const { return sizeof(offset); }
+// ============================================================================
+// Handshake - Protocol version negotiation (must be first packet)
+// ============================================================================
 
-		void serialize(std::vector<uint8_t>& out) const
-		{
-			cw::binary::writeBigEndian<uint64_t>(out, offset);
-		}
+struct Handshake {
+  static constexpr PacketType type = PacketType::Handshake;
+  static constexpr uint16_t kCurrentVersion = 1;
 
-		static Ack deserialize(const uint8_t* buf, size_t size)
-		{
-			if (size < sizeof(offset))
-				throw std::runtime_error("Ack: payload too small.");
+  uint16_t protocolVersion = kCurrentVersion;
+  uint32_t capabilities = 0; // Reserved for future feature flags
 
-			Ack packet;
-			packet.offset = cw::binary::readBigEndian<uint64_t>(buf);
-			return packet;
-		}
-	};
+  [[nodiscard]] std::size_t payloadSize() const noexcept {
+    return sizeof(protocolVersion) + sizeof(capabilities);
+  }
 
-	struct Error
-	{
-		static constexpr PacketType type = PacketType::Error;
-		std::uint16_t code;
-		std::string message;
+  void serialize(std::vector<uint8_t> &out) const {
+    binary::writeBigEndian(out, protocolVersion);
+    binary::writeBigEndian(out, capabilities);
+  }
 
-		std::size_t payloadSize() const {
-			return sizeof(code) + sizeof(uint32_t) + message.size();
-		}
+  [[nodiscard]] static Handshake deserialize(std::span<const uint8_t> payload) {
+    constexpr std::size_t kMinSize = sizeof(uint16_t) + sizeof(uint32_t);
+    if (payload.size() < kMinSize) {
+      throw std::runtime_error("Handshake: payload too small");
+    }
 
-		void serialize(std::vector<uint8_t>& out) const
-		{
-			if (message.size() > MAX_STRING_LENGTH)
-				throw std::length_error("Error: Message exceeds protocol limit.");
+    Handshake pkt;
+    std::size_t cursor = 0;
 
-			cw::binary::writeBigEndian(out, code);
-			cw::binary::writeBigEndian(out, static_cast<uint32_t>(message.size()));
-			out.insert(out.end(), message.begin(), message.end());
-		}
+    pkt.protocolVersion =
+        binary::readBigEndian<uint16_t>(payload.data() + cursor);
+    cursor += sizeof(pkt.protocolVersion);
 
-		static Error deserialize(const uint8_t* buf, size_t size)
-		{
-			constexpr size_t MIN_SIZE = sizeof(code) + sizeof(uint32_t);
-			if (size < MIN_SIZE)
-				throw std::runtime_error("Error: payload too small");
+    pkt.capabilities = binary::readBigEndian<uint32_t>(payload.data() + cursor);
 
-			Error p;
-			size_t cursor = 0;
+    return pkt;
+  }
+};
 
-			p.code = cw::binary::readBigEndian<uint16_t>(buf + cursor);
-			cursor += sizeof(p.code);
+// ============================================================================
+// Ack - Acknowledgment packet
+// ============================================================================
 
-			uint32_t msgLen = cw::binary::readBigEndian<uint32_t>(buf + cursor);
-			cursor += sizeof(msgLen);
+struct Ack {
+  static constexpr PacketType type = PacketType::Ack;
 
-			// SECURITY: Sanity Check before allocation
-			if (msgLen > MAX_STRING_LENGTH)
-				throw std::runtime_error("Error: Message length unreasonable (DoS protection).");
+  uint64_t offset = 0;
 
-			// SAFETY: Subtraction prevents integer overflow
-			if (size - cursor < msgLen)
-				throw std::runtime_error("Error: declared length exceeds buffer.");
+  [[nodiscard]] std::size_t payloadSize() const noexcept {
+    return sizeof(offset);
+  }
 
-			if (msgLen > 0)
-				p.message.assign(reinterpret_cast<const char*>(buf + cursor), msgLen);
+  void serialize(std::vector<uint8_t> &out) const {
+    binary::writeBigEndian(out, offset);
+  }
 
-			return p;
-		}
-	};
+  [[nodiscard]] static Ack deserialize(std::span<const uint8_t> payload) {
+    if (payload.size() < sizeof(uint64_t)) {
+      throw std::runtime_error("Ack: payload too small");
+    }
 
-	struct FileChunk
-	{
-		static constexpr PacketType type = PacketType::FileChunk;
-		std::uint64_t offset;
-		// REMOVED: std::uint32_t length; -> Redundant. data.size() is the truth.
-		std::vector<uint8_t> data;
+    Ack pkt;
+    pkt.offset = binary::readBigEndian<uint64_t>(payload.data());
+    return pkt;
+  }
+};
 
-		std::size_t payloadSize() const {
-			return sizeof(offset) + sizeof(uint32_t) + data.size();
-		}
+// ============================================================================
+// Error - Error notification
+// ============================================================================
 
-		void serialize(std::vector<uint8_t>& out) const
-		{
-			if (data.size() > MAX_CHUNK_SIZE)
-				throw std::length_error("Chunk: Data exceeds protocol limit.");
+struct Error {
+  static constexpr PacketType type = PacketType::Error;
 
-			// Explicitly cast size to uint32 check to ensure it fits field
-			if (data.size() > UINT32_MAX)
-				throw std::length_error("Chunk: Data too large for u32 field.");
+  uint16_t code = 0;
+  std::string message;
 
-			cw::binary::writeBigEndian(out, offset);
-			cw::binary::writeBigEndian(out, static_cast<uint32_t>(data.size()));
-			out.insert(out.end(), data.begin(), data.end());
-		}
+  [[nodiscard]] std::size_t payloadSize() const noexcept {
+    return sizeof(code) + sizeof(uint32_t) + message.size();
+  }
 
-		static FileChunk deserialize(const uint8_t* buf, size_t size)
-		{
-			constexpr size_t HEADER_SIZE = sizeof(offset) + sizeof(uint32_t);
-			if (size < HEADER_SIZE) throw std::runtime_error("FileChunk: payload too small.");
+  void serialize(std::vector<uint8_t> &out) const {
+    if (message.size() > kMaxStringLength) {
+      throw std::length_error("Error: message exceeds protocol limit");
+    }
 
-			FileChunk chunk;
-			size_t cursor = 0;
+    binary::writeBigEndian(out, code);
+    binary::writeBigEndian(out, static_cast<uint32_t>(message.size()));
+    out.insert(out.end(), message.begin(), message.end());
+  }
 
-			chunk.offset = binary::readBigEndian<uint64_t>(buf + cursor);
-			cursor += sizeof(offset);
+  [[nodiscard]] static Error deserialize(std::span<const uint8_t> payload) {
+    constexpr std::size_t kMinSize = sizeof(uint16_t) + sizeof(uint32_t);
+    if (payload.size() < kMinSize) {
+      throw std::runtime_error("Error: payload too small");
+    }
 
-			uint32_t dataLen = binary::readBigEndian<uint32_t>(buf + cursor);
-			cursor += sizeof(dataLen);
+    Error pkt;
+    std::size_t cursor = 0;
 
-			// SECURITY: Check logic
-			if (dataLen > MAX_CHUNK_SIZE)
-				throw std::runtime_error("FileChunk: Size unreasonable (DoS protection).");
+    pkt.code = binary::readBigEndian<uint16_t>(payload.data() + cursor);
+    cursor += sizeof(pkt.code);
 
-			// SAFETY: Overflow check
-			if (size - cursor < dataLen)
-				throw std::runtime_error("FileChunk: corrupted length mismatch");
+    const uint32_t msgLen =
+        binary::readBigEndian<uint32_t>(payload.data() + cursor);
+    cursor += sizeof(msgLen);
 
-			// Allocation
-			chunk.data.assign(buf + cursor, buf + cursor + dataLen);
+    if (msgLen > kMaxStringLength) {
+      throw std::runtime_error("Error: message length unreasonable");
+    }
+    if (payload.size() - cursor < msgLen) {
+      throw std::runtime_error("Error: declared length exceeds buffer");
+    }
 
-			return chunk;
-		}
-	};
+    if (msgLen > 0) {
+      pkt.message.assign(
+          reinterpret_cast<const char *>(payload.data() + cursor), msgLen);
+    }
 
-	struct FileDone
-	{
-		static constexpr PacketType type = PacketType::FileDone;
-		std::uint64_t fileSize;
+    return pkt;
+  }
+};
 
-		std::size_t payloadSize() const { return sizeof(fileSize); }
+// ============================================================================
+// FileInfo - File transfer header
+// ============================================================================
 
-		void serialize(std::vector<uint8_t>& out) const
-		{
-			cw::binary::writeBigEndian<uint64_t>(out, fileSize);
-		}
+struct FileInfo {
+  static constexpr PacketType type = PacketType::FileInfo;
 
-		static FileDone deserialize(const uint8_t* buf, size_t size)
-		{
-			if (size < sizeof(fileSize))
-				throw std::runtime_error("FileDone: payload too small.");
+  uint64_t fileSize = 0;
+  std::string fileName;
 
-			FileDone packet;
-			packet.fileSize = cw::binary::readBigEndian<uint64_t>(buf);
-			return packet;
-		}
-	};
+  [[nodiscard]] std::size_t payloadSize() const noexcept {
+    return sizeof(fileSize) + sizeof(uint32_t) + fileName.size();
+  }
 
-	struct FileInfo
-	{
-		static constexpr PacketType type = PacketType::FileInfo;
-		std::uint64_t fileSize;
-		std::string fileName;
+  void serialize(std::vector<uint8_t> &out) const {
+    if (fileName.empty()) {
+      throw std::length_error("FileInfo: filename empty");
+    }
+    if (fileName.size() > kMaxStringLength) {
+      throw std::length_error("FileInfo: filename too long");
+    }
 
-		std::size_t payloadSize() const {
-			return sizeof(fileSize) + sizeof(uint32_t) + fileName.size();
-		}
+    binary::writeBigEndian(out, fileSize);
+    binary::writeBigEndian(out, static_cast<uint32_t>(fileName.size()));
+    out.insert(out.end(), fileName.begin(), fileName.end());
+  }
 
-		void serialize(std::vector<uint8_t>& out) const
-		{
-			if (fileName.empty()) throw std::length_error("FileInfo: Filename empty");
-			if (fileName.size() > MAX_STRING_LENGTH) throw std::length_error("FileInfo: Filename too long");
+  [[nodiscard]] static FileInfo deserialize(std::span<const uint8_t> payload) {
+    constexpr std::size_t kMinSize = sizeof(uint64_t) + sizeof(uint32_t);
+    if (payload.size() < kMinSize) {
+      throw std::runtime_error("FileInfo: payload too small");
+    }
 
-			cw::binary::writeBigEndian(out, fileSize);
-			cw::binary::writeBigEndian(out, static_cast<uint32_t>(fileName.size()));
-			out.insert(out.end(), fileName.begin(), fileName.end());
-		}
+    FileInfo pkt;
+    std::size_t cursor = 0;
 
-		static FileInfo deserialize(const uint8_t* buf, size_t size)
-		{
-			constexpr size_t MIN_SIZE = sizeof(fileSize) + sizeof(uint32_t);
-			if (size < MIN_SIZE) throw std::runtime_error("FileInfo: payload too small.");
+    pkt.fileSize = binary::readBigEndian<uint64_t>(payload.data() + cursor);
+    cursor += sizeof(pkt.fileSize);
 
-			FileInfo info;
-			size_t cursor = 0;
+    const uint32_t nameLen =
+        binary::readBigEndian<uint32_t>(payload.data() + cursor);
+    cursor += sizeof(nameLen);
 
-			info.fileSize = cw::binary::readBigEndian<uint64_t>(buf + cursor);
-			cursor += sizeof(info.fileSize);
+    if (nameLen > kMaxStringLength) {
+      throw std::runtime_error("FileInfo: filename too long");
+    }
+    if (payload.size() - cursor < nameLen) {
+      throw std::runtime_error("FileInfo: corrupted name length");
+    }
 
-			uint32_t nameLen = cw::binary::readBigEndian<uint32_t>(buf + cursor);
-			cursor += sizeof(nameLen);
+    if (nameLen > 0) {
+      pkt.fileName.assign(
+          reinterpret_cast<const char *>(payload.data() + cursor), nameLen);
+    }
 
-			if (nameLen > MAX_STRING_LENGTH)
-				throw std::runtime_error("FileInfo: Filename too long (DoS protection).");
+    return pkt;
+  }
+};
 
-			if (size - cursor < nameLen)
-				throw std::runtime_error("FileInfo: corrupted name length mismatch.");
+// ============================================================================
+// FileChunk - File data chunk
+// ============================================================================
 
-			if (nameLen > 0)
-				info.fileName.assign(reinterpret_cast<const char*>(buf + cursor), nameLen);
+struct FileChunk {
+  static constexpr PacketType type = PacketType::FileChunk;
 
-			return info;
-		}
-	};
-}
+  uint64_t offset = 0;
+  std::vector<uint8_t> data;
+
+  [[nodiscard]] std::size_t payloadSize() const noexcept {
+    return sizeof(offset) + sizeof(uint32_t) + data.size();
+  }
+
+  void serialize(std::vector<uint8_t> &out) const {
+    if (data.size() > kMaxChunkSize) {
+      throw std::length_error("FileChunk: data exceeds protocol limit");
+    }
+    if (data.size() > std::numeric_limits<uint32_t>::max()) {
+      throw std::length_error("FileChunk: data too large for u32 field");
+    }
+
+    binary::writeBigEndian(out, offset);
+    binary::writeBigEndian(out, static_cast<uint32_t>(data.size()));
+    out.insert(out.end(), data.begin(), data.end());
+  }
+
+  [[nodiscard]] static FileChunk deserialize(std::span<const uint8_t> payload) {
+    constexpr std::size_t kHeaderSize = sizeof(uint64_t) + sizeof(uint32_t);
+    if (payload.size() < kHeaderSize) {
+      throw std::runtime_error("FileChunk: payload too small");
+    }
+
+    FileChunk pkt;
+    std::size_t cursor = 0;
+
+    pkt.offset = binary::readBigEndian<uint64_t>(payload.data() + cursor);
+    cursor += sizeof(pkt.offset);
+
+    const uint32_t dataLen =
+        binary::readBigEndian<uint32_t>(payload.data() + cursor);
+    cursor += sizeof(dataLen);
+
+    if (dataLen > kMaxChunkSize) {
+      throw std::runtime_error("FileChunk: size unreasonable");
+    }
+    if (payload.size() - cursor < dataLen) {
+      throw std::runtime_error("FileChunk: corrupted length");
+    }
+
+    pkt.data.assign(payload.data() + cursor, payload.data() + cursor + dataLen);
+
+    return pkt;
+  }
+};
+
+// ============================================================================
+// FileDone - File transfer completion marker
+// ============================================================================
+
+struct FileDone {
+  static constexpr PacketType type = PacketType::FileDone;
+
+  uint64_t fileSize = 0;
+
+  [[nodiscard]] std::size_t payloadSize() const noexcept {
+    return sizeof(fileSize);
+  }
+
+  void serialize(std::vector<uint8_t> &out) const {
+    binary::writeBigEndian(out, fileSize);
+  }
+
+  [[nodiscard]] static FileDone deserialize(std::span<const uint8_t> payload) {
+    if (payload.size() < sizeof(uint64_t)) {
+      throw std::runtime_error("FileDone: payload too small");
+    }
+
+    FileDone pkt;
+    pkt.fileSize = binary::readBigEndian<uint64_t>(payload.data());
+    return pkt;
+  }
+};
+
+} // namespace cw::packet

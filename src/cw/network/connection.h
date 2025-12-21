@@ -1,265 +1,143 @@
 #pragma once
 
-#include <asio.hpp>
-#include <vector>
-#include <memory>
-#include <deque>
-#include <atomic>
-#include <iostream>
 #include <array>
-#include <fstream>
-#include <filesystem> // [Added] For directory creation
+#include <atomic>
+#include <deque>
+#include <iostream>
+#include <memory>
+#include <vector>
 
-// Project Headers
-#include "../Frame.h"
-#include "../protocol/packet/packet.h"
+#include <asio.hpp>
+
+#include "../frame.h"
+#include "packet_handler.h"
 
 namespace cw::network {
 
-	using asio::ip::tcp;
-	namespace fs = std::filesystem; // [Added] Alias
+// Connection configuration constants
+inline constexpr std::size_t kReadBufferSize = 8192;
+inline constexpr std::size_t kCongestionThreshold = 1024 * 1024; // 1 MB
 
-	class Connection : public std::enable_shared_from_this<Connection>
-	{
+using asio::ip::tcp;
 
-	public:
-		static std::shared_ptr<Connection> create(asio::io_context& io)
-		{
-			return std::shared_ptr<Connection>(new Connection(io));
-		}
+// Manages an async TCP connection with frame-based messaging.
+// Business logic is delegated to an IPacketHandler.
+class Connection : public std::enable_shared_from_this<Connection> {
+public:
+  // Factory method - use this instead of constructor
+  static std::shared_ptr<Connection> create(asio::io_context &io,
+                                            IPacketHandler &handler) {
+    return std::shared_ptr<Connection>(new Connection(io, handler));
+  }
 
-		tcp::socket& socket() { return m_socket; }
+  // Access the underlying socket (for accept/connect operations)
+  [[nodiscard]] tcp::socket &socket() noexcept { return m_socket; }
 
-		bool isCongested() const
-		{
-			// If we have more than 1MB pending in RAM, tell the file reader to wait.
-			return m_queueSize > 1024 * 1024;
-		}
-		template<typename PacketT>
-		void send(const PacketT& packet)
-		{
-			auto frame = cw::packet::buildFrame(packet);
+  // Check if send queue is congested (for backpressure)
+  [[nodiscard]] bool isCongested() const noexcept {
+    return m_queueSize.load(std::memory_order_relaxed) > kCongestionThreshold;
+  }
 
-			auto self = shared_from_this();
-			asio::post(m_socket.get_executor(),
-				[this, self, msg = std::move(frame)]()
-				{
-					doWrite(std::move(msg));
-				});
-		}
+  // Send a packet (thread-safe, posts to io_context)
+  template <packet::FrameBuildable PacketT> void send(const PacketT &pkt) {
+    auto frame = packet::buildFrame(pkt);
+    auto self = shared_from_this();
 
-		void start()
-		{
-			std::cout << "[Connection] Client Handshake Complete. Ready.\n";
-			doRead();
-		}
+    asio::post(m_socket.get_executor(),
+               [this, self, msg = std::move(frame)]() mutable {
+                 doWrite(std::move(msg));
+               });
+  }
 
-	private:
-		void doRead()
-		{
-			auto self = shared_from_this();
+  // Start the read loop (call after connection is established)
+  void start() {
+    std::cout << "[Connection] Ready.\n";
+    doRead();
+  }
 
-			m_socket.async_read_some(asio::buffer(m_tempBuffer),
-				[this, self](std::error_code ec, std::size_t length)
-				{
-					if (!ec)
-					{
-						m_incomingBuffer.insert(m_incomingBuffer.end(),
-							m_tempBuffer.begin(),
-							m_tempBuffer.begin() + length);
+private:
+  Connection(asio::io_context &io, IPacketHandler &handler)
+      : m_socket(io), m_handler(handler) {
+    m_readBuffer.fill(0);
+    m_incomingBuffer.reserve(kReadBufferSize);
+  }
 
-						processBuffer();
+  void doRead() {
+    auto self = shared_from_this();
 
-						doRead();
-					}
-					else {
-						// Socket closed or error
-						std::cout << "[Connection] Disconnected: " << ec.message() << "\n";
-					}
+    m_socket.async_read_some(
+        asio::buffer(m_readBuffer),
+        [this, self](std::error_code ec, std::size_t bytesRead) {
+          if (!ec) {
+            m_incomingBuffer.insert(m_incomingBuffer.end(),
+                                    m_readBuffer.begin(),
+                                    m_readBuffer.begin() + bytesRead);
 
-				});
-		}
+            processBuffer();
+            doRead();
+          } else {
+            std::cout << "[Connection] Disconnected: " << ec.message() << "\n";
+            m_handler.onDisconnect();
+          }
+        });
+  }
 
-		void processBuffer()
-		{
-			using namespace cw::packet;
+  void processBuffer() {
+    while (auto frame = packet::tryParseFrame(m_incomingBuffer)) {
+      // SPEC E1: Catch exceptions from handler to prevent std::terminate.
+      // Exceptions in ASIO callbacks are fatal by default.
+      try {
+        m_handler.onPacket(*frame);
+      } catch (const std::exception &e) {
+        std::cerr << "[Connection] Packet handling error: " << e.what() << "\n";
+        // Continue processing remaining frames
+      }
 
-			while (true)
-			{
-				try
-				{
-					// A. Attempt Zero-Copy Parse
-					// If buffer is too small (header or body), this THROWS.
-					ParsedFrame view = parseFrame(m_incomingBuffer);
+      // Consume the processed frame
+      const std::size_t consumeSize = frame->totalSize();
+      m_incomingBuffer.erase(m_incomingBuffer.begin(),
+                             m_incomingBuffer.begin() + consumeSize);
+    }
+  }
 
-					// B. Calculate Total Size (Header + Payload)
-					constexpr size_t HEADER_SIZE = 10;
-					size_t totalFrameSize = HEADER_SIZE + view.size;
+  void doWrite(std::vector<uint8_t> frame) {
+    m_queueSize.fetch_add(frame.size(), std::memory_order_relaxed);
+    m_writeQueue.push_back(std::move(frame));
 
-					// C. Handle the Packet
-					dispatchPacket(view);
+    if (m_writeQueue.size() > 1)
+      return;
+    writeQueueFront();
+  }
 
-					// D. Consume Data (The Shift)
-					m_incomingBuffer.erase(m_incomingBuffer.begin(),
-						m_incomingBuffer.begin() + totalFrameSize);
+  void writeQueueFront() {
+    auto self = shared_from_this();
 
-					// E. Exit if empty
-					if (m_incomingBuffer.empty()) break;
-				}
-				catch (const std::runtime_error&)
-				{
-					// FRAGMENTATION DETECTED
-					break;
-				}
-			}
-		}
+    asio::async_write(
+        m_socket, asio::buffer(m_writeQueue.front()),
+        [this, self](std::error_code ec, std::size_t /*bytesWritten*/) {
+          if (!ec) {
+            m_queueSize.fetch_sub(m_writeQueue.front().size(),
+                                  std::memory_order_relaxed);
+            m_writeQueue.pop_front();
 
-		void doWrite(std::vector<uint8_t> frame)
-		{
-			m_queueSize += frame.size();
+            if (!m_writeQueue.empty()) {
+              writeQueueFront();
+            }
+          } else {
+            std::cerr << "[Connection] Write Error: " << ec.message() << "\n";
+            m_socket.close();
+          }
+        });
+  }
 
-			m_writeQueue.push_back(std::move(frame));
+private:
+  tcp::socket m_socket;
+  IPacketHandler &m_handler;
 
-			if (m_writeQueue.size() > 1) return;
-			writeQueueFront();
+  std::array<uint8_t, kReadBufferSize> m_readBuffer{};
+  std::vector<uint8_t> m_incomingBuffer;
+  std::deque<std::vector<uint8_t>> m_writeQueue;
+  std::atomic<std::size_t> m_queueSize{0};
+};
 
-		}
-
-		// The actual Async Write call
-		void writeQueueFront()
-		{
-			auto self = shared_from_this();
-			asio::async_write(m_socket,
-				asio::buffer(m_writeQueue.front()),
-				[this, self](std::error_code ec, std::size_t length)
-				{
-					if (!ec)
-					{
-						// TRACKING: Subtract size (packet sent)
-						m_queueSize -= m_writeQueue.front().size();
-
-						m_writeQueue.pop_front();
-
-						if (!m_writeQueue.empty()) writeQueueFront();
-					}
-
-					else
-					{
-						std::cerr << "[Connection] Write Error: " << ec.message() << "\n";
-						m_socket.close();
-					}
-				});
-		}
-
-		// 4. THE ROUTER (Business Logic)
-		void dispatchPacket(const cw::packet::ParsedFrame& view)
-		{
-			using namespace cw::packet;
-
-			switch (view.type)
-			{
-			case PacketType::Ack:
-			{
-				auto pkt = Ack::deserialize(view.payload_view, view.size);
-				std::cout << "[Recv] Ack (Offset: " << pkt.offset << ")\n";
-				break;
-			}
-			case PacketType::FileInfo:
-			{
-				auto pkt = FileInfo::deserialize(view.payload_view, view.size);
-				std::cout << "[Recv] Starting Download: " << pkt.fileName << " (" << pkt.fileSize << " bytes)\n";
-
-				// [FIX] Handle Directories & 1-1 Mapping
-				// 1. Convert to filesystem path
-				fs::path targetPath(pkt.fileName);
-
-				// 2. Create parent directories if they don't exist
-				if (targetPath.has_parent_path()) {
-					std::error_code ec;
-					fs::create_directories(targetPath.parent_path(), ec);
-					if (ec) {
-						std::cerr << "[Error] Failed to create directory: " << ec.message() << "\n";
-					}
-				}
-
-				// 3. Open File (Exact path, no prefix)
-				m_outFile.open(targetPath, std::ios::binary);
-
-				if (!m_outFile.is_open()) {
-					std::cerr << "[Error] Could not open file for writing: " << targetPath << "\n";
-					return;
-				}
-
-				m_expectedSize = pkt.fileSize;
-				m_receivedBytes = 0;
-				break;
-			}
-			case PacketType::FileChunk:
-			{
-				// 2. Write Chunk
-				if (!m_outFile.is_open()) return;
-
-				auto pkt = FileChunk::deserialize(view.payload_view, view.size);
-
-				// Using seekp handles out-of-order packets if we add parallel sending later
-				m_outFile.seekp(pkt.offset);
-				m_outFile.write(reinterpret_cast<const char*>(pkt.data.data()), pkt.data.size());
-
-				m_receivedBytes += pkt.data.size();
-				break;
-			}
-			case PacketType::FileDone:
-			{
-				// 3. Finish
-				auto pkt = FileDone::deserialize(view.payload_view, view.size);
-				if (m_outFile.is_open()) {
-					m_outFile.close();
-					std::cout << "[Recv] File Download Complete.\n";
-				}
-
-				if (m_receivedBytes == pkt.fileSize) {
-					std::cout << "[Check] Integrity Validated (" << m_receivedBytes << " bytes).\n";
-
-					// Send Ack back to client
-					Ack ack;
-					ack.offset = m_receivedBytes;
-					send(ack);
-				}
-				else {
-					std::cerr << "[Check] CORRUPTION DETECTED! Expected " << pkt.fileSize << " but got " << m_receivedBytes << "\n";
-				}
-				break;
-			}
-			case PacketType::Error:
-			{
-				auto pkt = Error::deserialize(view.payload_view, view.size);
-				std::cerr << "[Recv] Error: " << pkt.message << "\n";
-				break;
-			}
-			default:
-				std::cout << "[Recv] Unknown Packet Type: " << (int)view.type << "\n";
-			}
-		}
-
-		Connection(asio::io_context& io) :
-			m_socket(io)
-		{
-			// std::array is POD, no need to init explicitly but {} is fine
-			m_tempBuffer = {};
-			m_incomingBuffer.reserve(8192);
-		}
-
-
-	private:
-		asio::ip::tcp::socket m_socket;
-
-		std::array<uint8_t, 8192> m_tempBuffer;
-		std::vector<uint8_t> m_incomingBuffer;
-		std::deque<std::vector<uint8_t>> m_writeQueue;
-		std::atomic<size_t> m_queueSize = 0;
-		// --- File Transfer State ---
-		std::ofstream m_outFile;
-		std::uint64_t m_expectedSize = 0;
-		std::uint64_t m_receivedBytes = 0;
-	};
-}
+} // namespace cw::network

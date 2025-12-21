@@ -1,7 +1,8 @@
 .idea
 .vs 
-out 
+.cache
 .vscode
+out 
 build
 cmake-build-debug
 CMakeSettings.json
