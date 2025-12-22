@@ -50,8 +50,8 @@ set(CW_HEADERS
     "src/cw/network/i_sender.h"
     "src/cw/network/file_receiver.h"
     "src/cw/network/connection.h"
-    "src/cw/network/server.h"
-    "src/cw/network/client.h"
+    "src/cw/network/Server.h"
+    "src/cw/network/Client.h"
 )
 
 add_library(cw INTERFACE)
