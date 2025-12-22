@@ -38,7 +38,7 @@ target_include_directories(asio INTERFACE "${CMAKE_SOURCE_DIR}/include")
 # Core library (header-only)
 set(CW_HEADERS
     "src/cw/binary.h"
-    "src/cw/frame.h"
+    "src/cw/Frame.h"
     "src/cw/file/i_file_writer.h"
     "src/cw/file/path_validator.h"
     "src/cw/file/file_writer.h"
