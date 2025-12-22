@@ -103,7 +103,8 @@ TEST_F(AckTest, Deserialize_ThrowsOnTooSmall) {
 }
 
 TEST_F(AckTest, RoundTrip_EdgeValues) {
-  for (uint64_t val : {0ULL, 1ULL, std::numeric_limits<uint64_t>::max()}) {
+  for (uint64_t val :
+       {uint64_t{0}, uint64_t{1}, std::numeric_limits<uint64_t>::max()}) {
     pkt.offset = val;
     std::vector<uint8_t> out;
     pkt.serialize(out);
@@ -340,7 +341,8 @@ TEST_F(FileDoneTest, Deserialize_ThrowsOnTooSmall) {
 }
 
 TEST_F(FileDoneTest, RoundTrip_EdgeValues) {
-  for (uint64_t val : {0ULL, 1ULL, std::numeric_limits<uint64_t>::max()}) {
+  for (uint64_t val :
+       {uint64_t{0}, uint64_t{1}, std::numeric_limits<uint64_t>::max()}) {
     pkt.fileSize = val;
     std::vector<uint8_t> out;
     pkt.serialize(out);
