@@ -38,7 +38,7 @@ target_include_directories(asio INTERFACE "${CMAKE_SOURCE_DIR}/include")
 # Core library (header-only)
 set(CW_HEADERS
     "src/cw/binary.h"
-    "src/cw/Frame.h"
+    "src/cw/frame.h"
     "src/cw/file/i_file_writer.h"
     "src/cw/file/path_validator.h"
     "src/cw/file/file_writer.h"
@@ -50,8 +50,8 @@ set(CW_HEADERS
     "src/cw/network/i_sender.h"
     "src/cw/network/file_receiver.h"
     "src/cw/network/connection.h"
-    "src/cw/network/Server.h"
-    "src/cw/network/Client.h"
+    "src/cw/network/server.h"
+    "src/cw/network/client.h"
 )
 
 add_library(cw INTERFACE)

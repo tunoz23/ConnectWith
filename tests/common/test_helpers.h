@@ -4,7 +4,6 @@
 #include <gtest/gtest.h>
 #include <vector>
 
-
 #include "cw/frame.h"
 
 namespace cw::test {
