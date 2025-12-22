@@ -1,19 +1,17 @@
 #pragma once
 
-#include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <string>
-#include <thread>
 
 #include <asio.hpp>
 
-#include "../file/file_transfer.h"
+#include "../file/file_writer.h"
+#include "../file/transfer_orchestrator.h"
 #include "connection.h"
 #include "file_receiver.h"
-
 
 namespace cw::network {
 
@@ -21,16 +19,21 @@ namespace fs = std::filesystem;
 using asio::ip::tcp;
 
 // TCP Client with integrated file transfer support.
-// Uses std::jthread for safe background file transfers.
+// Simplified: delegates transfer orchestration to TransferOrchestrator.
 class Client {
 public:
   explicit Client(asio::io_context &context)
-      : m_context(context), m_handler(std::make_unique<FileReceiver>()),
-        m_connection(Connection::create(context, *m_handler)) {}
+      : m_context(context),
+        // Client uses temp directory for handler (only receives Acks, not
+        // files)
+        m_dummyWriter(
+            std::make_unique<file::FileWriter>(fs::temp_directory_path())),
+        m_handler(std::make_unique<FileReceiver>(*m_dummyWriter)),
+        m_connection(Connection::create(context, *m_handler)),
+        m_orchestrator(
+            std::make_unique<transfer::TransferOrchestrator>(*m_connection)) {}
 
-  ~Client() {
-    // jthread automatically joins/stops on destruction
-  }
+  ~Client() = default;
 
   // Non-copyable
   Client(const Client &) = delete;
@@ -58,34 +61,15 @@ public:
         });
   }
 
-  // Start a file transfer in a background thread.
-  // Uses std::jthread for automatic cleanup and cancellation support.
+  // Start a file transfer using the orchestrator.
   void startTransfer(const fs::path &sourcePath) {
-    if (!fs::exists(sourcePath)) {
-      std::cerr << "[Client] Path does not exist: " << sourcePath << "\n";
-      return;
-    }
-
-    // Stop any existing transfer
-    if (m_transferThread.joinable()) {
-      m_transferThread.request_stop();
-      m_transferThread.join();
-    }
-
-    m_transferThread =
-        std::jthread([this, sourcePath](std::stop_token stopToken) {
-          try {
-            transferFiles(sourcePath, stopToken);
-          } catch (const std::exception &e) {
-            std::cerr << "[Client] Transfer error: " << e.what() << "\n";
-          }
-        });
+    m_orchestrator->startTransfer(sourcePath);
   }
 
   // Send a packet directly (for advanced use cases)
   template <packet::FrameBuildable PacketT> void send(const PacketT &pkt) {
     if (m_connection) {
-      m_connection->send(pkt);
+      m_connection->sendPacket(pkt);
     }
   }
 
@@ -95,33 +79,13 @@ public:
   }
 
 private:
-  void transferFiles(const fs::path &sourcePath, std::stop_token stopToken) {
-    if (fs::is_directory(sourcePath)) {
-      for (const auto &entry : fs::recursive_directory_iterator(sourcePath)) {
-        if (stopToken.stop_requested()) {
-          std::cout << "[Client] Transfer cancelled.\n";
-          return;
-        }
-
-        if (entry.is_regular_file()) {
-          std::cout << "Sending: " << entry.path().string() << std::endl;
-          std::string relativePath =
-              fs::relative(entry.path(), sourcePath).string();
-          transfer::sendFile(m_connection, entry.path().string(), relativePath);
-        }
-      }
-    } else {
-      std::cout << "Sending: " << sourcePath.string() << std::endl;
-      transfer::sendFile(m_connection, sourcePath.string(),
-                         sourcePath.filename().string());
-    }
-  }
-
-private:
   asio::io_context &m_context;
+  // Client side needs a FileWriter only because FileReceiver requires it,
+  // but client typically doesn't receive files (only Acks)
+  std::unique_ptr<file::FileWriter> m_dummyWriter;
   std::unique_ptr<FileReceiver> m_handler;
   std::shared_ptr<Connection> m_connection;
-  std::jthread m_transferThread;
+  std::unique_ptr<transfer::TransferOrchestrator> m_orchestrator;
 };
 
 } // namespace cw::network

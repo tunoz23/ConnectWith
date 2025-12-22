@@ -5,11 +5,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <memory>
 #include <string>
 #include <thread>
 
-#include "../network/connection.h"
+#include "../network/i_sender.h"
 #include "../protocol/packet/packet.h"
 
 namespace cw::transfer {
@@ -20,11 +19,13 @@ namespace fs = std::filesystem;
 inline constexpr std::size_t kDefaultChunkSize = 4096;
 inline constexpr std::chrono::milliseconds kBackpressureDelay{1};
 
-// Send a file over a connection.
+// Send a file over a sender interface.
 // localPath: absolute path to the file on disk
 // remoteName: path/name as it should appear on the receiver (optional)
-inline void sendFile(std::shared_ptr<network::Connection> conn,
-                     const std::string &localPath,
+//
+// Now takes ISender& instead of shared_ptr<Connection>, allowing the file
+// transfer logic to be tested without a real network connection.
+inline void sendFile(network::ISender &sender, const std::string &localPath,
                      const std::string &remoteName = "") {
 
   fs::path path(localPath);
@@ -47,13 +48,13 @@ inline void sendFile(std::shared_ptr<network::Connection> conn,
 
   // Send handshake first (protocol versioning)
   packet::Handshake handshake;
-  conn->send(handshake);
+  sender.send(handshake);
 
   // Send file header
   packet::FileInfo info;
   info.fileName = nameToSend;
   info.fileSize = fileSize;
-  conn->send(info);
+  sender.send(info);
 
   // Stream file in chunks
   std::ifstream file(localPath, std::ios::binary);
@@ -61,7 +62,7 @@ inline void sendFile(std::shared_ptr<network::Connection> conn,
 
   while (file) {
     // Backpressure: wait if the send queue is too full
-    while (conn->isCongested()) {
+    while (sender.isCongested()) {
       std::this_thread::sleep_for(kBackpressureDelay);
     }
 
@@ -79,16 +80,26 @@ inline void sendFile(std::shared_ptr<network::Connection> conn,
       chunk.data.resize(bytesRead);
     }
 
-    conn->send(chunk);
+    sender.send(chunk);
     offset += bytesRead;
   }
 
   // Send completion marker
   packet::FileDone done;
   done.fileSize = fileSize;
-  conn->send(done);
+  sender.send(done);
 
   std::cout << "[Transfer] Upload Complete. Sent " << offset << " bytes.\n";
+}
+
+// Overload that accepts shared_ptr for backward compatibility
+template <typename T>
+  requires std::derived_from<T, network::ISender>
+inline void sendFile(std::shared_ptr<T> sender, const std::string &localPath,
+                     const std::string &remoteName = "") {
+  if (sender) {
+    sendFile(*sender, localPath, remoteName);
+  }
 }
 
 } // namespace cw::transfer

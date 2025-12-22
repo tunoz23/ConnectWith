@@ -111,7 +111,7 @@ TEST(FileChunkTest, SerializationRoundTrip) {
 // Path Traversal Security Tests (SPEC E2)
 // ============================================================================
 
-#include "cw/network/file_receiver.h"
+#include "cw/file/path_validator.h"
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -127,27 +127,27 @@ protected:
 };
 
 TEST_F(PathSecurityTest, AllowsSimpleFilename) {
-  EXPECT_TRUE(cw::network::isPathSafe("test.txt", baseDir));
+  EXPECT_TRUE(cw::file::isPathSafe("test.txt", baseDir));
 }
 
 TEST_F(PathSecurityTest, AllowsSubdirectory) {
-  EXPECT_TRUE(cw::network::isPathSafe("subdir/test.txt", baseDir));
+  EXPECT_TRUE(cw::file::isPathSafe("subdir/test.txt", baseDir));
 }
 
 TEST_F(PathSecurityTest, BlocksParentTraversal) {
-  EXPECT_FALSE(cw::network::isPathSafe("../test.txt", baseDir));
+  EXPECT_FALSE(cw::file::isPathSafe("../test.txt", baseDir));
 }
 
 TEST_F(PathSecurityTest, BlocksDeepTraversal) {
-  EXPECT_FALSE(cw::network::isPathSafe("../../../etc/passwd", baseDir));
+  EXPECT_FALSE(cw::file::isPathSafe("../../../etc/passwd", baseDir));
 }
 
 TEST_F(PathSecurityTest, BlocksHiddenTraversal) {
-  EXPECT_FALSE(cw::network::isPathSafe("subdir/../../test.txt", baseDir));
+  EXPECT_FALSE(cw::file::isPathSafe("subdir/../../test.txt", baseDir));
 }
 
 TEST_F(PathSecurityTest, BlocksAbsolutePathOutsideBase) {
   // Construct a path that's definitely outside base
   fs::path outsidePath = baseDir.parent_path() / "outside.txt";
-  EXPECT_FALSE(cw::network::isPathSafe(outsidePath, baseDir));
+  EXPECT_FALSE(cw::file::isPathSafe(outsidePath, baseDir));
 }

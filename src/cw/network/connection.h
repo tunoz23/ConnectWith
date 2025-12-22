@@ -10,6 +10,7 @@
 #include <asio.hpp>
 
 #include "../frame.h"
+#include "i_sender.h"
 #include "packet_handler.h"
 
 namespace cw::network {
@@ -22,7 +23,9 @@ using asio::ip::tcp;
 
 // Manages an async TCP connection with frame-based messaging.
 // Business logic is delegated to an IPacketHandler.
-class Connection : public std::enable_shared_from_this<Connection> {
+// Implements ISender for decoupled packet sending.
+class Connection : public std::enable_shared_from_this<Connection>,
+                   public ISender {
 public:
   // Factory method - use this instead of constructor
   static std::shared_ptr<Connection> create(asio::io_context &io,
@@ -34,12 +37,21 @@ public:
   [[nodiscard]] tcp::socket &socket() noexcept { return m_socket; }
 
   // Check if send queue is congested (for backpressure)
-  [[nodiscard]] bool isCongested() const noexcept {
+  [[nodiscard]] bool isCongested() const noexcept override {
     return m_queueSize.load(std::memory_order_relaxed) > kCongestionThreshold;
   }
 
-  // Send a packet (thread-safe, posts to io_context)
-  template <packet::FrameBuildable PacketT> void send(const PacketT &pkt) {
+  // ISender implementation - send specific packet types
+  void send(const packet::Handshake &pkt) override { sendPacket(pkt); }
+  void send(const packet::FileInfo &pkt) override { sendPacket(pkt); }
+  void send(const packet::FileChunk &pkt) override { sendPacket(pkt); }
+  void send(const packet::FileDone &pkt) override { sendPacket(pkt); }
+  void send(const packet::Ack &pkt) override { sendPacket(pkt); }
+  void send(const packet::Error &pkt) override { sendPacket(pkt); }
+
+  // Generic send for any FrameBuildable packet (backward compatibility)
+  template <packet::FrameBuildable PacketT>
+  void sendPacket(const PacketT &pkt) {
     auto frame = packet::buildFrame(pkt);
     auto self = shared_from_this();
 

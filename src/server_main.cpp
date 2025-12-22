@@ -31,18 +31,13 @@ int main(int argc, char *argv[]) {
     std::cout << "[Server] Saving to: " << fs::absolute(destPath) << "\n";
   }
 
-  // Change working directory so files are written to destination
-  try {
-    fs::current_path(destPath);
-    std::cout << "[Server] Working directory: " << fs::current_path() << "\n";
-  } catch (const std::exception &e) {
-    std::cerr << "[Server] Failed to change directory: " << e.what() << "\n";
-    return 1;
-  }
+  // Get absolute path for the server (no global current_path mutation)
+  fs::path absoluteDest = fs::absolute(destPath);
 
   try {
     asio::io_context ioContext;
-    cw::network::Server server(ioContext, kDefaultPort);
+    // Pass destination directory explicitly to Server
+    cw::network::Server server(ioContext, kDefaultPort, absoluteDest);
 
     std::cout << "[Server] Listening on port " << kDefaultPort << "...\n";
     ioContext.run();
