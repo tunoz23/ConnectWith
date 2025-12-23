@@ -27,6 +27,11 @@ if(ENABLE_SANITIZERS AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_link_options(-fsanitize=address,undefined)
 endif()
 
+# Windows target version (suppress ASIO warnings)
+if(WIN32)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)  # Windows 10/11
+endif()
+
 # =============================================================================
 # 1. LIBRARIES
 # =============================================================================
