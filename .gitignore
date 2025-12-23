@@ -6,3 +6,6 @@ out
 build
 cmake-build-debug
 CMakeSettings.json
+cmake-build-release
+.DS_Store
+
