@@ -26,13 +26,30 @@ namespace fs = std::filesystem;
   // Normalize to remove . and .. components
   fs::path normalized = absoluteRequested.lexically_normal();
 
-  // Check that normalized path starts with the base directory
-  auto [baseEnd, reqIt] =
-      std::mismatch(canonicalBase.begin(), canonicalBase.end(),
-                    normalized.begin(), normalized.end());
+  // Use lexically_relative to check if path is within base
+  // If the path is outside base, lexically_relative returns a path
+  // starting with ".." or an absolute path
+  fs::path relative = normalized.lexically_relative(canonicalBase);
 
-  // If we consumed all of canonicalBase, the path is within the base
-  return baseEnd == canonicalBase.end();
+  if (relative.empty()) {
+    return false;
+  }
+
+  // Check if relative path escapes (starts with "..")
+  auto it = relative.begin();
+  if (it != relative.end()) {
+    std::string first = it->string();
+    if (first == "..") {
+      return false;
+    }
+  }
+
+  // Also reject if the relative path is itself absolute (different root)
+  if (relative.is_absolute()) {
+    return false;
+  }
+
+  return true;
 }
 
 } // namespace cw::file
