@@ -1,9 +1,17 @@
 cmake_minimum_required(VERSION 3.30)
 project(ConnectWith)
 
-set(CMAKE_CXX_STANDARD 23)
+
+if(APPLE)
+    # std::jthread ve std::stop_token macOS 11+ veya daha yenisini gerektirir.
+    # Garanti olsun diye 13.0 veya 14.0 olarak ayarlıyoruz.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum OS X deployment version" FORCE)
+endif()
+
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 
 # =============================================================================
 # OPTIONS

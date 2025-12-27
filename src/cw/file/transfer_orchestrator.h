@@ -2,8 +2,8 @@
 
 #include <filesystem>
 #include <iostream>
+#include <stop_token>
 #include <thread>
-
 #include "../network/i_sender.h"
 #include "file_transfer.h"
 
