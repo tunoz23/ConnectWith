@@ -14,6 +14,7 @@ target_include_directories(asio INTERFACE "${CMAKE_SOURCE_DIR}/include")
 set(CW_SOURCES
     "src/cw/endian.h"
     "src/cw/Frame.h"
+    "src/cw/utf8.h"
     "src/cw/network/connection.h"
     "src/cw/protocol/packet/packet.h"
     "src/cw/protocol/packet/packet_type.h"
@@ -45,7 +46,7 @@ add_executable(Server
  "src/cw/file/file.h" "src/cw/network/Server.h" "src/cw/network/Client.h")
 target_link_libraries(Server PRIVATE cw)
 if(WIN32)
-    target_link_libraries(Server PRIVATE ws2_32)
+    target_link_libraries(Server PRIVATE ws2_32 mswsock)
 endif()
 
 # --- 4. EXECUTABLE: CLIENT ---
@@ -55,7 +56,7 @@ add_executable(Client
  "src/cw/file/file.h" "src/cw/network/Server.h" "src/cw/network/Client.h")
 target_link_libraries(Client PRIVATE cw)
 if(WIN32)
-    target_link_libraries(Client PRIVATE ws2_32)
+    target_link_libraries(Client PRIVATE ws2_32 mswsock)
 endif()
 
 # --- 5. UNIT TESTS ---
@@ -65,7 +66,7 @@ add_executable(unit_tests
  "src/cw/file/file.h" "src/cw/network/Server.h" "src/cw/network/Client.h")
 target_link_libraries(unit_tests PRIVATE GTest::gtest_main cw)
 if(WIN32)
-    target_link_libraries(unit_tests PRIVATE ws2_32)
+    target_link_libraries(unit_tests PRIVATE ws2_32 mswsock)
 endif()
 
 include(GoogleTest)
