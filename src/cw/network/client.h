@@ -66,6 +66,11 @@ public:
     m_orchestrator->startTransfer(sourcePath);
   }
 
+  // Check if a transfer is currently in progress.
+  [[nodiscard]] bool isTransferring() const noexcept {
+    return m_orchestrator->isTransferring();
+  }
+
   // Send a packet directly (for advanced use cases)
   template <packet::FrameBuildable PacketT> void send(const PacketT &pkt) {
     if (m_connection) {

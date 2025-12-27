@@ -1,6 +1,8 @@
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include <asio.hpp>
 
@@ -26,14 +28,42 @@ int main(int argc, char *argv[]) {
 
   try {
     asio::io_context ioContext;
+
+    // Work guard keeps io_context.run() alive
+    auto workGuard = asio::make_work_guard(ioContext);
+
     cw::network::Client client(ioContext);
 
-    client.connect(serverIp, kDefaultPort, [&client, &sourcePath]() {
-      std::cout << "[Client] Connected! Starting upload...\n";
-      client.startTransfer(sourcePath);
-    });
+    // Track when transfer is done
+    std::atomic<bool> transferStarted{false};
 
-    ioContext.run();
+    client.connect(serverIp, kDefaultPort,
+                   [&client, &sourcePath, &transferStarted]() {
+                     std::cout << "[Client] Connected! Starting upload...\n";
+                     client.startTransfer(sourcePath);
+                     transferStarted.store(true);
+                   });
+
+    // Run io_context in a separate thread so we can poll for transfer
+    // completion
+    std::thread ioThread([&ioContext]() { ioContext.run(); });
+
+    // Wait for transfer to start
+    while (!transferStarted.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    // Poll for transfer completion (orchestrator.isTransferring())
+    while (client.isTransferring()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Transfer done - release work guard and stop io_context
+    workGuard.reset();
+    ioContext.stop();
+    ioThread.join();
+
+    std::cout << "[Client] Transfer complete.\n";
   } catch (const std::exception &e) {
     std::cerr << "[Client] Exception: " << e.what() << "\n";
     return 1;
