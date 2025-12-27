@@ -1,11 +1,12 @@
 #pragma once
 
-#include <filesystem>
-#include <iostream>
-#include <stop_token>
-#include <thread>
 #include "../network/i_sender.h"
 #include "file_transfer.h"
+#include <atomic>
+#include <filesystem>
+#include <iostream>
+#include <thread>
+
 
 namespace cw::transfer {
 
@@ -13,14 +14,20 @@ namespace fs = std::filesystem;
 
 // Orchestrates file transfers by iterating directories and sending files.
 // Single responsibility: directory traversal + transfer coordination.
-// Uses std::jthread for automatic cleanup and cancellation support.
+// Uses std::thread with atomic flag for cancellation support.
 class TransferOrchestrator {
 public:
-  explicit TransferOrchestrator(network::ISender &sender) : m_sender(sender) {}
+  explicit TransferOrchestrator(network::ISender &sender)
+      : m_sender(sender), m_stopRequested(false) {}
 
-  ~TransferOrchestrator() = default;
+  ~TransferOrchestrator() {
+    requestStop();
+    if (m_transferThread.joinable()) {
+      m_transferThread.join();
+    }
+  }
 
-  // Non-copyable, non-movable (due to jthread member)
+  // Non-copyable, non-movable (due to thread member)
   TransferOrchestrator(const TransferOrchestrator &) = delete;
   TransferOrchestrator &operator=(const TransferOrchestrator &) = delete;
   TransferOrchestrator(TransferOrchestrator &&) = delete;
@@ -36,26 +43,24 @@ public:
 
     // Stop any existing transfer
     if (m_transferThread.joinable()) {
-      m_transferThread.request_stop();
+      requestStop();
       m_transferThread.join();
     }
 
-    m_transferThread =
-        std::jthread([this, sourcePath](std::stop_token stopToken) {
-          try {
-            transferFiles(sourcePath, stopToken);
-          } catch (const std::exception &e) {
-            std::cerr << "[Orchestrator] Transfer error: " << e.what() << "\n";
-          }
-        });
+    // Reset stop flag for new transfer
+    m_stopRequested.store(false, std::memory_order_relaxed);
+
+    m_transferThread = std::thread([this, sourcePath]() {
+      try {
+        transferFiles(sourcePath);
+      } catch (const std::exception &e) {
+        std::cerr << "[Orchestrator] Transfer error: " << e.what() << "\n";
+      }
+    });
   }
 
   // Request stop of current transfer
-  void requestStop() {
-    if (m_transferThread.joinable()) {
-      m_transferThread.request_stop();
-    }
-  }
+  void requestStop() { m_stopRequested.store(true, std::memory_order_relaxed); }
 
   // Check if a transfer is in progress
   [[nodiscard]] bool isTransferring() const noexcept {
@@ -63,10 +68,10 @@ public:
   }
 
 private:
-  void transferFiles(const fs::path &sourcePath, std::stop_token stopToken) {
+  void transferFiles(const fs::path &sourcePath) {
     if (fs::is_directory(sourcePath)) {
       for (const auto &entry : fs::recursive_directory_iterator(sourcePath)) {
-        if (stopToken.stop_requested()) {
+        if (m_stopRequested.load(std::memory_order_relaxed)) {
           std::cout << "[Orchestrator] Transfer cancelled.\n";
           return;
         }
@@ -86,7 +91,8 @@ private:
 
 private:
   network::ISender &m_sender;
-  std::jthread m_transferThread;
+  std::thread m_transferThread;
+  std::atomic<bool> m_stopRequested;
 };
 
 } // namespace cw::transfer
