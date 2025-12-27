@@ -4,6 +4,16 @@ project(ConnectWith)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# UTF-8 source and execution character set for MSVC
+if(MSVC)
+    add_compile_options(/utf8)
+endif()
+
+# Windows target version (suppress ASIO warnings)
+if(WIN32)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)  # Windows 10/11
+endif()
+
 # --- 1. SHARED LIBRARIES ---
 
 add_library(asio INTERFACE)
